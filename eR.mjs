@@ -2,7 +2,6 @@
 import * as fs from 'fs';
 import * as cp from 'child_process';
 import { exiftool } from "exiftool-vendored";
-import anyAscii from 'any-ascii';
 import ollama from 'ollama';
 import SSH2Promise from 'ssh2-promise';
 import Rsync from "@moritzloewenstein/rsync";

@@ -1,7 +1,6 @@
 {
   "dependencies": {
     "@moritzloewenstein/rsync": "^1.0.3",
-    "any-ascii": "^0.3.3",
     "exiftool-vendored": "^31.2.0",
     "ollama": "^0.6.2",
     "ssh2-promise": "^1.0.3",
