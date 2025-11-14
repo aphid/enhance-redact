@@ -1,7 +1,6 @@
 //some includes
 import * as fs from 'fs';
 import * as cp from 'child_process';
-import { exiftool } from "exiftool-vendored";
 import ollama from 'ollama';
 import SSH2Promise from 'ssh2-promise';
 import Rsync from "@moritzloewenstein/rsync";
@@ -9,15 +8,16 @@ import { Agent, setGlobalDispatcher } from 'undici';
 
 setGlobalDispatcher(
   new Agent({
-    headersTimeout: 600000,
-    connectTimeout: 600000,
-    bodyTimeout: 600000,
+    headersTimeout: 900000,
+    connectTimeout: 900000,
+    bodyTimeout: 900000,
   }),
 );
 
 
+let icePass = fs.readFileSync("icepass.txt").toString().trim();
 
-let dirs = ["sources/", "images/", "sounds/", "text/", "data/"];
+let dirs = ["sources/", "images/", "sounds/", "text/", "data/", "logrtty/"];
 
 let sshconfig = { 
 	host: 'slowscan.local', 
@@ -37,10 +37,42 @@ const CTdir = "./sources/";
 //source img + _process_gen.
 const imgDir = "./images/";
 const wavDir = "./sounds/";
-
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+async function log(event, object){
+  let now = new Date();
+  let logItem = { event: event, date: now.toISOString(),  epoch: now.getTime(), object };
+  
+}
+
+async function changeTitle(title,tries){
+    if (tries && tries > 8) {
+       log("failed title", { title: title });
+       return false;
+    }
+    if (!tries){
+       tries = 0;
+    }
+    title = encodeURIComponent(title);
+    let cmd = `curl -u admin:${icePass} "https://station.aphid.org:8443/admin/metadata?mode=updinfo&mount=/enhance-redact.mp3&song=${title}"`;
+    console.log(cmd);
+    try { 
+        let asdf = cp.execSync(cmd);
+	if (asdf.toString().includes(" successful")){
+           console.log("TITLE UPDATED");
+	   return Promise.resolve();
+	}
+
+    } catch(e){
+      //todo retry
+      tries++;
+      return changeTitle(title,tries);
+	    
+    }
+}
+
 
 function base64_encode(file) {
   // read binary data
@@ -50,9 +82,13 @@ function base64_encode(file) {
 }
 
 
-async function sync(){
-
-   for (let d of dirs){
+async function sync(filter){
+   let drs = dirs;
+   if (filter){
+     drs = [filter];
+   }
+   console.log(drs);   
+   for (let d of drs){
 
     const rsync = new Rsync({
        source: `${d}`,
@@ -69,7 +105,7 @@ async function sync(){
    }
 }
 
-for (let d of dirs){
+    for (let d of drs){
 
    const rsync = new Rsync({
       source: `slowscan.local:~/${d}`,
@@ -122,6 +158,9 @@ let spawnProm = async function (cmd, args, options, passed) {
                 outout += data.replace("\n", "");
             });
             child.stderr.on('data', (data) => {
+		if (options === "enhance"){
+                   //parse data here, rtty-text progress per some interval
+		}
                 console.log(data);
             });
             child.on('close', async (code) => {
@@ -157,20 +196,41 @@ let xmit = async function(fn){
         console.log(e);
     }
     await sleep(250);
-    let command = await ssh.exec(`sudo ./fm_transmitter/fm_transmitter -f 93.500 ${fn}`);
-    console.log(command);
+    let cmd = `sudo ./fm_transmitter/fm_transmitter -f 93.500 ${fn}`;
+    let command = await ssh.exec(cmd);
+    console.log('remote running', cmd,  command);
+    await sleep(250)
     ssh.close();
     return Promise.resolve();
+}
+
+let logRTTY = async function(text){
+    let fn = Date.now(); 
+    let wav = "logrtty/" + fn + ".wav";
+    let txt = "logrtty/" + fn + ".txt";
+    await rttyEncode(text, wav);
+    fs.writeFileSync(txt, text);
+    await sync("logrtty/");
+    await sync("sounds/");
+    await xmit(wav);
+    return Promise.resolve();
+
 }
 
 let enhance = async function(inn,out){
     return new Promise(async(resolve, reject) => {
     console.log(new Date());
     console.log("spawning...");
+    let lastNum = 0;
     let command = await ssh.spawn(`Real-ESRGAN-ncnn-vulkan/realesrgan-ncnn-vulkan -i ${inn} -o ${out}`); //-n realesrgan-x4plus? currently fails with 'killed' 
     command.stderr.on('data', (data) => {
        let dataString = data.toString();
        console.log(dataString);
+       let pct = parseInt(dataString);
+       if (pct % 5 == 0 && pct > lastNum){
+          logRTTY(dataString);
+	  lastNum = pct;
+       }
     });
     command.on('exit', () => {
     console.log(new Date());
@@ -208,19 +268,21 @@ let sstvEncode = async function (img, options) {
     return Promise.resolve();
 }
 
-let fixRate = async function (wav){
+let fixRate = async function (input, output){
     let cmd = "sox";
-    let targ = wav.replace("_rx", "rx_44100");
-    let args = [wav, "-r", "44100", targ];
+    let args = [input, "-r", "44100", output];
     let sp = await spawnProm(cmd, args);
-    fs.renameSync(targ, wav);
     return Promise.resolve();
 }
 
 //inputs wav path, returns img path
 let sstvDecode = async function (wav, output, options) {
-    const sr = (await exiftool.read(wav)).SampleRate;
-    console.log(sr);
+    let scmd = "soxi " + wav;
+    let getrate = cp.execSync(scmd).toString();
+    let fields = getrate.split("\n")
+    let line = fields.filter(line => line.includes("Sample Rate"));
+    let sr = line[0].split(": ")[1];
+    console.log(sr); //useful metadata?
 
     console.log(`converting ${wav} to ${output}`);
     let cmd = "/home/aphid/apps/slowrx-cli/slowrx-cli";
@@ -228,6 +290,7 @@ let sstvDecode = async function (wav, output, options) {
     try {
     let sp = await spawnProm(cmd, args);
     if (!fs.existsSync(output)){
+	await RTTYlog("No SSTV signal detected in received audio, retrying...");
 	console.log("NO SIGNAL IN WAV");
 	fs.unlinkSync(wav);
         let delTask = await ssh.exec(`rm ${wav}`);	
@@ -246,7 +309,9 @@ let sstvDecode = async function (wav, output, options) {
 //inputs text, returns path to wav;
 let rttyEncode = async function (text, output, options) {
     console.log(`converting txt to ${output}`);
-    text = fs.readFileSync(text);
+    if (text.split(".").pop() == "txt"){
+        text = fs.readFileSync(text);
+    }
     let cmd = "minimodem"
     let args = ["--write", "45.45", "--stopbits=1.5", "--ascii", "-f", output];
 
@@ -255,12 +320,14 @@ let rttyEncode = async function (text, output, options) {
     return Promise.resolve();
 }
 
-let rttyDecode = async function (wav, options) {
-    let output = wav.replace(".wav", ".txt");
+let rttyDecode = async function (mp3, txt, options) {
+    console.log("Decoding rtty mp3");
+    let output = mp3.replace(".mp3", ".txt");
     let cmd = "minimodem";
-    let args = ["--rx", "45.45", "-q", "--file", wav];
+    let args = ["--rx", "45.45", "-q", "--file", mp3];
     let sp = await spawnProm(cmd, args);
     console.log(sp);
+    fs.writeFileSync(txt, sp);
     //command: minimodem --rx rtty -q --file modem_audio.wav > output_file.txt
 }
 
@@ -293,6 +360,23 @@ let enhanceImage = async function (image, options) {
 
 let leSox;
 let leRtl;
+let leIce;
+
+let recordIce = async function (outfile){
+   console.log("recording" + outfile);
+   let cmd = "wget";
+   let args = ["-O", outfile, "http://localhost:8000/enhance-redact.mp3"];
+   console.log(cmd, args);
+   let rProcess = await cp.spawn(cmd, args);
+   leIce = rProcess;
+   let lastUpdate = Date.now();
+   rProcess.stderr.on('data', (data) => {
+       if (Date.now() - lastUpdate > 10000){
+           console.error(`${data}`);
+	   lastUpdate = Date.now();
+       }
+   });   	   
+}
 
 let record = async function (outfile, freq){
    if (!freq){
@@ -337,6 +421,20 @@ let sstvComply = async function (image, output, options) {
     //console.log(sp);
     return Promise.resolve();
 
+}
+
+let transceiveIce = async function(fn,wav){
+   console.log("TRANSCIEVING");
+   console.log(fn, wav);
+   console.log("starting record...");
+   recordIce(fn);
+   await sleep(5000);
+   console.log("xmitting...");
+   await xmit(wav);
+   console.log("xmission over");
+   await sleep(5000);
+   console.log("ending record");
+   leIce.kill();
 }
 
 let transceive = async function(fn,wav){
@@ -392,57 +490,80 @@ async function doTheThing(gen, fun){
    console.log(fn);
    let sstvI = `images/${fn}_sstv.png`;
    let sstvW = `sounds/${fn}_sstv.wav`;
-   let sstvR = `sounds/${fn}_rx.wav`;
+   let sstvRm = `sounds/${fn}_rx.mp3`;
+   let sstvRw = `sounds/${fn}_rx.wav`;
    let sstvIR = `images/${fn}_rx.bmp`;
    let sstvIRp = `images/${fn}_rx.png`;	
    let enh = `images/${fn}_enh.png`;
    let data = `data/${fn}.json`;
    let words = `text/${fn}.txt`;
    let rtty = `sounds/${fn}_rtty.wav`;
-   let rttyrx = `sounds/${fn}_rtty_rx.wav`;
+   let rttyrx = `sounds/${fn}_rtty_rx.mp3`;
    let txtrx = `text/${fn}_rx.txt`;
    console.log(source, sstvI);
    if (!fs.existsSync(sstvI)){
        await sstvComply(source, sstvI);
        await sync();
    }
+   console.log("Checking for raw sstv sound");
    if (!fs.existsSync(sstvW)){
        await sstvEncode(sstvI);
        await sync();
    }
-   if (!fs.existsSync(sstvR)){
-       await transceive(sstvR,sstvW);
+   console.log("Checking for rx'd sstv sound");
+   if (!fs.existsSync(sstvRw)){
+       let msg = `${sstvI}_as_sstv`;
+       await logRTTY(msg);
+       changeTitle(msg);
+       await transceiveIce(sstvRm,sstvW);
        console.log("fixing rate");
-       await fixRate(sstvR);
+       await fixRate(sstvRm, sstvRw);
        await sync();
    }
+   console.log("Checking for rx'd sstv image");
    if (!fs.existsSync(sstvIR)){
-       await sstvDecode(sstvR, sstvIR);
+       await sstvDecode(sstvRw, sstvIR);
        await iConvert(sstvIR, sstvIRp);
        await sync();
    }
+   console.log("Checking for enhanced image");
    if (!fs.existsSync(enh)){
+       let msg = `enhancing_${sstvIRp}`;
+       await logRTTY(msg);
+       changeTitle(msg);
        await enhance(sstvIRp,enh);
        await sync();
    }
+   console.log("Checking for data from image");
    if (!fs.existsSync(data)){
+       let msg = `finding objects in ${enh}`;
+       await logRTTY(msg);
+       changeTitle(msg);
        await llamatime(enh, fn);
        await sync();
    }
+   console.log("Checking for text from image data");
    if (!fs.existsSync(words)){
        await json2words(data,words);
        await sync();
    }
+   console.log("checking for wav from image data text");
    if (!fs.existsSync(rtty)){
        await rttyEncode(words,rtty);
        await sync();
    }
+   console.log("checking for rx'd wav from image data text");
    if (!fs.existsSync(rttyrx)){
-       await transceive(rttyrx, rtty);
+       let msg = `${words} as rtty`;
+       await logRTTY(msg);
+       changeTitle(msg);
+       await transceiveIce(rttyrx, rtty);
        await sync();
    }
+   console.log("checking for rx'd text from image data text wav");
    if (!fs.existsSync(txtrx)){
-       console.log("idk how to do this yet");
+       await rttyDecode(rttyrx, txtrx);
+       await sync();
    }
    console.log("end of gen");
    doTheThing(gen+1, fn);
@@ -460,7 +581,7 @@ let models = [
   "gemma3",
   "llava",
   "ALIENTELLIGENCE/medicalimaginganalysis",
-  "moondream"
+  //"moondream"
 ]
 
 let model = "";
@@ -496,7 +617,7 @@ async function runQuery(img) {
   console.log("Extracting JSON");
   let json = extractObject(resp);
   console.log(json);
-  return json;
+  return {data: json, model: model};
 }
 
 function extractObject(str) {
@@ -546,14 +667,16 @@ async function llamatime(img, fn) {
   console.log("------------------------------------------");
   let data;
   try {
-    data = answer;
-    data.model = model;
+    data = answer.data;
+    data.model = answer.model;
     
     //delete data.description;
   } catch (e) {
     ollama.abort();
     console.log(e);
-    console.log("didn't parse, trying again")
+    await RTTYlog("recognition JSON didn't parse, retrying")
+    console.log("didn't parse, trying again");
+    
     return llamatime(img, fn);
   }
   ollama.abort();
