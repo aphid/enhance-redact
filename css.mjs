@@ -15,7 +15,7 @@ setGlobalDispatcher(
 );
 
 
-let icePass = fs.readFileSync("icepass.txt").toString().trim();
+let auth = JSON.parse(fs.readFileSync("auth.json"));
 
 let dirs = ["sources/", "images/", "sounds/", "text/", "data/", "logrtty/"];
 
@@ -56,7 +56,7 @@ async function changeTitle(title,tries){
        tries = 0;
     }
     title = encodeURIComponent(title);
-    let cmd = `curl -u admin:${icePass} "https://station.aphid.org:8443/admin/metadata?mode=updinfo&mount=/enhance-redact.mp3&song=${title}"`;
+    let cmd = `curl -u admin:${auth.icepass} "https://station.aphid.org:8443/admin/metadata?mode=updinfo&mount=/enhance-redact.mp3&song=${title}"`;
     console.log(cmd);
     try { 
         let asdf = cp.execSync(cmd);
@@ -227,6 +227,7 @@ let logRTTY = async function(text){
     await sync("logrtty/");
     await sync("sounds/");
     console.log(text);
+    updateStatus({status: "logging", message: text, description: "a lo-fidelity high pitched square wave trill, jumping rapidly back and forth between 1400 and 1800Hz for a duration that corresponds to the length of the encoded text. It is likely a digital frequency-shift keying transmission with audio-rate variations.", descriptionAuthor: "Ezra Teboul"});
     await xmit(wav);
     await sleep(12000);
     return Promise.resolve();
@@ -234,18 +235,21 @@ let logRTTY = async function(text){
 }
 
 let inhale = async function (){
+    updateStatus({ status: "recognizing", description: "'take a breath in and hold it' spoken by a computerized female voice", source: "recording of a CT scan breath instruction"});
     console.log("breathe in and hold it");
     await xmit("inhale.wav");
     return Promise.resolve();
 }
 
 let exhale = async function (){
+    updateStatus({ status: "recognizing", description: "'you may breathe normally' spoken by a computerized female voice", source: "recording of a CT scan breath instruction"});
     console.log("you may breathe normally");
     await xmit("exhale.wav");
     return Promise.resolve ();
 }
 
 let radbell = async function(){
+    updateStatus({ status: "marking time", description: "a hand bell rings several times, celebrating the end of radiation treatment" });
     console.log("ding ding ding");
     await xmit("radbell.wav");
     await sleep(3000);
@@ -253,6 +257,7 @@ let radbell = async function(){
 }
 
 let beachbell = async function(){
+    updateStatus({ status: "marking time", description: "a hand bell is rung several times, celebrating the end of radiation treatment"});
     console.log("DING DING DING");
     await xmit("a_bell.wav");
     await xmit("d_bell.wav");
@@ -280,6 +285,7 @@ function randomRange(min, max){
 
 
 let enhance = async function(inn,out){
+    updateStatus({ status: "enhancing" });
     console.log("Running enhance on", inn, "to", out);
     return new Promise(async(resolve, reject) => {
     console.log(new Date());
@@ -504,6 +510,8 @@ let transceiveIce = async function(fn,wav){
    recordIce(fn);
    await sleep(8000);
    console.log("xmitting...");
+   updateStatus({status: "transceiving", description: `(temporary) This SSTV signal encodes an image into distinct oscillating tones that switch back and forth, which are heard as a repetitive, warbling "boo-boo-beeeeeeee-boo-boo-beeeeeeee" sound for the duration of the signal.`});
+
    await xmit(wav);
    console.log("xmission over");
    await sleep(8000);
@@ -572,9 +580,33 @@ async function cleanUp(gen, fn){
 
 }
 
+let updateStatus = async function(json){
+    console.log(json);
+    json.passkey = auth.statuspass;
+    console.log(json);
+    const url = "https://station.aphid.org/current_metadata/";
+    const options = {
+        method: "POST",
+	body: JSON.stringify(json),
+	headers: {
+	    "Content-Type": "application/json"
+	}
+    };
+    try { 
+        let f = await fetch(url, options);
+        f = await f.json();
+        console.log("Response: ", f);
+    } catch(e){
+        console.error("Status Update Error:", e);
+    }
+    
+};
+
+
 let files = fs.readdirSync("sources/").filter((file) => (file.includes(".jpg") ||  file.includes(".png")));
 
 async function doTheThing(gen, fun){
+   updateStatus({status: "working", description: "soft radio static"});
    console.log("starting cycle");
    await sync();
    let target;
@@ -584,7 +616,7 @@ async function doTheThing(gen, fun){
    if (!gen || gen >= 23){ 
        console.log(files);
        await beachbell();
-       target = files.shift();
+       target = files.pop();
        source = `sources/${target}`;
        gen = 0;
        genStr = (gen + "").padStart(2,"0");
@@ -615,7 +647,7 @@ async function doTheThing(gen, fun){
    console.log(source, sstvI);
    if (fs.existsSync(txtrx)){
        console.log("gen complete");
-       await logRTTY("gen complete");
+       await logRTTY(`${fn} complete`);
        console.log("ding ding ding");
        await radbell();
        await cleanUp(gen, fn);
