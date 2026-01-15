@@ -3,14 +3,15 @@ import * as fs from 'fs';
 import * as cp from 'child_process';
 import ollama from 'ollama';
 import SSH2Promise from 'ssh2-promise';
+import SFTP from 'ssh2-promise/lib/sftp.js'
 import Rsync from "@moritzloewenstein/rsync";
 import { Agent, setGlobalDispatcher } from 'undici';
 
 setGlobalDispatcher(
   new Agent({
-    headersTimeout: 900000,
-    connectTimeout: 900000,
-    bodyTimeout: 900000,
+    headersTimeout: 1200000,
+    connectTimeout: 1200000,
+    bodyTimeout: 1200000,
   }),
 );
 
@@ -44,7 +45,9 @@ function sleep(ms) {
 async function log(event, object){
   let now = new Date();
   let logItem = { event: event, date: now.toISOString(),  epoch: now.getTime(), object };
-  
+  let log = JSON.parse(fs.readFileSync("log.json"));
+  log.push(logItem);
+  fs.writeFileSync("log.json", JSON.stringify(log, undefined, 2));
 }
 
 async function changeTitle(title,tries){
@@ -172,7 +175,7 @@ let spawnProm = async function (cmd, args, options, passed) {
 		if (options === "enhance"){
                    //parse data here, rtty-text progress per some interval
 		}
-                console.log(data);
+                console.log(data.toString());
             });
             child.on('close', async (code) => {
                 resolve(outout);
@@ -211,7 +214,11 @@ let xmit = async function(fn){
     let cmd = `sudo ./fm_transmitter/fm_transmitter -f 91.30 ${fn}`;
     let command = await ssh.exec(cmd);
     console.log('remote running', cmd,  command);
-    await sleep(250)
+    if (command.includes("does not exist")){
+        logItem("missing file: " + fn);
+    }
+    await sleep(250);
+    ssh.removeAllListeners();
     ssh.close();
     return Promise.resolve();
 }
@@ -234,17 +241,27 @@ let logRTTY = async function(text){
 
 }
 
+//it would be nice to have these as objects so that mfg metadata gets passed with specific transcript
+//
+let breaths = JSON.parse(fs.readFileSync("breaths.json"));
+
+
 let inhale = async function (){
-    updateStatus({ status: "recognizing", description: "'take a breath in and hold it' spoken by a computerized female voice", source: "recording of a CT scan breath instruction"});
+    let i = getRandomInt(0, breaths.length - 1);
+    let breath = breaths[i];
+    let bf = "breaths/" + breath.inhale;
+    updateStatus({ status: "recognizing", description: `'${breath.inhaleWords}' spoken by a computerized female voice`, source: "recording of a CT scan breath instruction", manufacturer: breath.manufacturer, cycleDuration: (Date.now() - breathTimer) / 1000});
     console.log("breathe in and hold it");
-    await xmit("inhale.wav");
-    return Promise.resolve();
+    await xmit(bf);
+    return Promise.resolve(i);
 }
 
-let exhale = async function (){
-    updateStatus({ status: "recognizing", description: "'you may breathe normally' spoken by a computerized female voice", source: "recording of a CT scan breath instruction"});
+let exhale = async function (i){
+    let breath =  breaths[i];
+    let bf = "breaths/" + breath.exhale;
+    updateStatus({ status: "recognizing", description: `'${breath.exhaleWords}' spoken by a computerized female voice`, source: "recording of a CT scan breath instruction", manufacturer: breath.manufacturer, cycleDuration: (Date.now() - breathTimer) / 1000});
     console.log("you may breathe normally");
-    await xmit("exhale.wav");
+    await xmit(bf);
     return Promise.resolve ();
 }
 
@@ -267,20 +284,23 @@ let beachbell = async function(){
 
 let breathing = false;
 
-let breathCycle = async function (){
+let breathCycle = async function (img){
     console.log("breathing?", breathing);
     await sleep(25000);
     if (!breathing){
 	return Promise.resolve();
     }
-    await inhale();
+    console.log("processing", img);
+    let i = await inhale();
     await sleep(7500);
-    await exhale();
-    return await breathCycle();
+    await exhale(i);
+    return await breathCycle(img);
 }
 
-function randomRange(min, max){
-   Math.random() * (max - min) + min;
+function getRandomInt(min, max) {
+    min = Math.ceil(min);
+    max = Math.floor(max);
+    return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 
@@ -304,16 +324,19 @@ let enhance = async function(inn,out){
     });
     command.on('exit', () => {
     console.log(new Date());
+    ssh.removeAllListeners();
     ssh.close();
     resolve();
     });
     command.on('close', () => {
     console.log(new Date());
+    ssh.removeAllListeners();	    
     ssh.close();
     resolve();
     });
     command.on('error', (e) => {
        console.log(e);
+	    ssh.removeAllListeners();
 	    ssh.close();
 	    reject(e);
     });
@@ -341,8 +364,23 @@ let sstvEncode = async function (img, options) {
 let fixRate = async function (input, output){
     let cmd = "sox";
     let args = [input, "-r", "44100", output];
+    console.log(cmd, args);
     let sp = await spawnProm(cmd, args);
     return Promise.resolve();
+}
+
+
+let opusify = async function (input, output){
+    console.log("opusifying", input, output);
+    let cmd = `ffmpeg -i ${input} -b:v 12k ${output}`;
+    try { 
+	let exec = cp.execSync(cmd);
+	console.log(exec.toString());
+    } catch(e){
+        throw(e);
+    }
+    return Promise.resolve();
+
 }
 
 //inputs wav path, returns img path
@@ -400,11 +438,11 @@ let rttyEncode = async function (text, output, options) {
     return Promise.resolve();
 }
 
-let rttyDecode = async function (mp3, txt, options) {
-    console.log("Decoding rtty mp3");
-    let output = mp3.replace(".mp3", ".txt");
+let rttyDecode = async function (opus, txt, options) {
+    console.log("Decoding rtty opus");
+    let output = opus.replace(".opus", ".txt");
     let cmd = "minimodem";
-    let args = ["--rx", "45.45", "-q", "--file", mp3];
+    let args = ["--rx", "45.45", "-q", "--file", opus];
     let sp = await spawnProm(cmd, args);
     console.log(sp);
     fs.writeFileSync(txt, sp);
@@ -443,19 +481,21 @@ let leRtl;
 let leIce;
 
 let recordIce = async function (outfile){
-   console.log("recording" + outfile);
+   console.log("recording " + outfile);
    let cmd = "wget";
-   let args = ["-O", outfile, "http://localhost:8000/enhance-redact.mp3"];
+   let args = ["-O", outfile, "http://localhost:8000/enhance-redact.opus"];
    console.log(cmd, args);
    let rProcess = await cp.spawn(cmd, args);
    leIce = rProcess;
    let lastUpdate = Date.now();
    rProcess.stderr.on('data', (data) => {
        if (Date.now() - lastUpdate > 10000){
-           console.error(`${data}`);
+           console.log(`${data}`);
+	   console.log(fs.statSync(outfile).size);
 	   lastUpdate = Date.now();
+	   
        }
-   });   	   
+   });
 }
 
 let record = async function (outfile, freq){
@@ -466,6 +506,7 @@ let record = async function (outfile, freq){
    //rtl_fm -f 93.5e6 -M wbfm -E deemp -F 9 -| sox -t raw -e signed -c 1 -b 16 -r 32k - oof.wav
    let rtlCmd = "rtl_fm";
    let rtlArgs = ["-f", freq, '-M', 'wbfm', '-E', 'deemp', '-F', '9', '-'];
+   console.log (rtlCmd, rtlArgs.join(" "));
    let rtlProcess = await cp.spawn(rtlCmd, rtlArgs);
    leRtl = rtlProcess;
    let soxCmd = "sox";
@@ -477,13 +518,16 @@ let record = async function (outfile, freq){
        console.error(`SoX stderr: ${data}`);
    });
 
-	soxProcess.on('close', (code) => {
-  if (code === 0) {
-    console.log(`SoX process exited successfully. Output saved to ${outfile}`);
-  } else {
-    console.error(`SoX process exited with code ${code}`);
-  }
-});
+  soxProcess.on('close', (code) => {
+    if (code === 0) {
+      console.log(`SoX process exited successfully. Output saved to ${outfile}`);
+    } else {
+      console.error(`SoX process exited with code ${code}`);
+    }
+    if (fs.statSync(outfile).size === 0){
+	throw("rtlsdr connection might be broken");
+    }
+  });
 
 }
 
@@ -510,8 +554,8 @@ let transceiveIce = async function(fn,wav){
    recordIce(fn);
    await sleep(8000);
    console.log("xmitting...");
-   updateStatus({status: "transceiving", description: `(temporary) This SSTV signal encodes an image into distinct oscillating tones that switch back and forth, which are heard as a repetitive, warbling "boo-boo-beeeeeeee-boo-boo-beeeeeeee" sound for the duration of the signal.`});
-
+   //updateStatus({status: "transceiving", description: `(temporary) This SSTV signal encodes an image into distinct oscillating tones that switch back and forth, which are heard as a repetitive, warbling 'boo-boo-beeeeeeee-boo-boo-beeeeeeee' sound for the duration of the signal (four minutes and fifty seconds).`});
+   updateStatus({status: "transceiving", description: `A background wash of broad smooth radio static containing moderately audible broadcast voices, punctuated by foregrounded patterned, repeating, and highly compressed digital signal tones indicating data transmission for nearly five minutes. Slight tonal or rhythmic variations accompany the beginning and end of the signal tone sequence.`, descriptionAuthor: `Anna Friz`});
    await xmit(wav);
    console.log("xmission over");
    await sleep(8000);
@@ -545,19 +589,28 @@ let transceive = async function(fn,wav){
 //await transcieve();
 
 async function json2words(json,txt){
+   console.log("json to words: ", json);
    let data = JSON.parse(fs.readFileSync(json));
    let words = data.items;
-   fs.writeFileSync(txt, words.join(", "));
-  
+   if (words && words.length){
+       fs.writeFileSync(txt, words.join(", "));
+   }
+   return Promise.resolve();
 }
 
-async function cleanUp(gen, fn){
+async function cleanUp(gen, fn, syncs){
+   console.log("syncing", syncs, "for", fn);
    let clean = [
 	   `images/${fn}_sstv.png`, //should match rx of prev gen
            `sounds/${fn}_sstv.wav`,
 	   `sounds/${fn}_rx.wav`,
            `images/${fn}_rx.bmp`,
-           `sounds/${fn}_rtty.wav`
+	   `images/${fn}_rx.png`,
+	   `images/${fn}_enh.png`,
+           `sounds/${fn}_rtty.wav`,
+	   `sounds/${fn}_rx.mp3`,
+	   `sounds/${fn}_rtty.mp3`,
+	   `text/${fn}_rx.txt`
    ];
   for (let f of fs.readdirSync("logrtty")){
       clean.push("logrtty/" + f);
@@ -574,14 +627,81 @@ async function cleanUp(gen, fn){
       }
       ssh.close();
   }
- 
+  findings(syncs, fn); 
 
   return Promise.resolve();
 
 }
 
+let currentScan, lastImg;
+
+async function findings(syncs, fn){
+   console.log(syncs, fn);
+   let sshconfig = {
+	host: 'aphid.org',
+	username: 'aphid',
+	identity: '/home/aphid/.ssh/id_ed25519',
+	reconnectTries: 10,
+	reconnectDelay: 5000
+   };
+   const ssh = new SSH2Promise(sshconfig);
+   var sftp = new SSH2Promise.SFTP(ssh);
+ 
+   try {
+       console.log("syncing with webserver");
+       await ssh.connect();
+   } catch(e){
+       console.error("something went wrong syncing with web server", e);
+       logRTTY("server unresponsive, attempting to reconnect");
+       await sleep(15000);
+       return await findings(syncs);
+   }
+   let remote = "/mnt/css/";
+   for (let u of syncs){
+      let rem = remote;
+      console.log("u: ", u);
+      let t;
+      console.log("uploading", u, "to", remote+u);
+      if (u.includes("avif")){
+	 t = u.replace("findings", "images");
+      } else if (u.includes("opus")){
+         t = u.replace("findings", "sounds");
+      } else if (u.includes("txt")){
+         t = u.replace("findings","text");
+      }
+      console.log("rem: ", rem);
+      console.log(u, "to", rem+u)
+      await sftp.fastPut(u, rem+t, {});
+      console.log("done", u, rem+t);
+   }
+   try { 
+   await ssh.close();
+   await sftp.close();
+   } catch(e){
+     console.log("ssh/sftp closing", e);
+   }
+   lastImg = syncs[1];
+   return Promise.resolve();
+}
+
+let updateLog = async function(json){
+    let log = fs.readFileSync("statuslog.json");
+    let items = JSON.parse(log);
+    items.push(json);
+    fs.writeFileSync("statuslog.json", JSON.stringify(items, undefined, 2));
+    return Promise.resolve();
+}
+
 let updateStatus = async function(json){
     console.log(json);
+    json.timestamp = Date.now();
+    if (currentScan){
+        json.currentScan = currentScan;
+    }
+    if (lastImg){
+        json.lastImage = lastImg;
+    }
+    await updateLog(json);
     json.passkey = auth.statuspass;
     console.log(json);
     const url = "https://station.aphid.org/current_metadata/";
@@ -597,7 +717,7 @@ let updateStatus = async function(json){
         f = await f.json();
         console.log("Response: ", f);
     } catch(e){
-        console.error("Status Update Error:", e);
+        console.error("Status Update Error:", url, e);
     }
     
 };
@@ -613,47 +733,77 @@ async function doTheThing(gen, fun){
    let source;
    let genStr;
    console.log("checking current gen");
-   if (!gen || gen >= 23){ 
-       console.log(files);
+   if (!gen || gen >= 46){ 
+       console.log("new file");
        await beachbell();
        target = files.pop();
        source = `sources/${target}`;
        gen = 0;
        genStr = (gen + "").padStart(2,"0");
    } else {
+       console.log("existing file", fun);
        genStr = (gen + "").padStart(2,"0");
        let pGenStr = ((gen - 1) + "").padStart(2,"0");
-       let files = fs.readdirSync("images/").filter(file => (file.includes(fun) && file.includes(`gen-${pGenStr}_enh`) && file.includes(".png")));
-       console.log(files);
+       let files = fs.readdirSync("findings/").filter(file => (file.includes(fun) && file.includes(`gen-${pGenStr}_enh`) && file.includes(".avif")));
+       console.log("files: ", files);
        target = files[0];
-       source = `images/${target}`;
+       source = `findings/${target}`;
    }
-   console.log(gen, genStr);
-   console.log(target)
-   let fn = target.split(".")[0] + ".gen-" + genStr;
+   //console.log(gen, genStr);
+   //console.log(target, source)
+   //let fn = target.split(".")[0] + ".gen-" + genStr;
+   let fn;
+   console.log(target);
+   if (target){
+       fn = target.split(".")[0] + ".gen-" + genStr;
+   } else {
+       fn = fun + ".gen-" + genStr;
+   }
+   console.log(fn);
+   currentScan = fn;
+   if (!currentScan){
+       throw("scanname is broken");
+   }
+   let lastt = "findings/" + fn.split(".")[0] + ".gen-45_rx.opus";
+   console.log("checking existance of gen 45", lastt);
+   //if txt exists for last gen...
+   if (fs.existsSync(lastt)){
+       console.log("this file is complete");
+       //await beachbell();
+       return await doTheThing();
+   }
    console.log(fn);
    let sstvI = `images/${fn}_sstv.png`;
    let sstvW = `sounds/${fn}_sstv.wav`;
-   let sstvRm = `sounds/${fn}_rx.mp3`;
+   let sstvRm = `sounds/${fn}_rx.opus`;
+   let opus = `findings/${fn}_rx.opus`;
    let sstvRw = `sounds/${fn}_rx.wav`;
    let sstvIR = `images/${fn}_rx.bmp`;
    let sstvIRp = `images/${fn}_rx.png`;	
+   let avif = `findings/${fn}_rx.avif`;
+   let avife = `findings/${fn}_enh.avif`;
    let enh = `images/${fn}_enh.png`;
    let data = `data/${fn}.json`;
    let words = `text/${fn}.txt`;
    let rtty = `sounds/${fn}_rtty.wav`;
-   let rttyrx = `sounds/${fn}_rtty_rx.mp3`;
+   let rttyrx = `sounds/${fn}_rtty_rx.opus`;
+   let rttyfind = `findings/${fn}_rtty_rx.opus`;
    let txtrx = `text/${fn}_rx.txt`;
+   let txtfind = `findings/${fn}_rx.txt`;
+   let syncs = [opus, avif, avife, rttyfind, txtfind].filter((e) => !e.includes(".gen-00_"));
+
    console.log(source, sstvI);
-   if (fs.existsSync(txtrx)){
+
+   if (fs.existsSync(txtfind)){
        console.log("gen complete");
        await logRTTY(`${fn} complete`);
        console.log("ding ding ding");
        await radbell();
-       await cleanUp(gen, fn);
+       await cleanUp(gen, fn, syncs);
        return await doTheThing(gen+1, fn);
    }
    if (!fs.existsSync(sstvI)){
+       console.log("converting", source, sstvI);
        await sstvComply(source, sstvI);
        await sync();
    }
@@ -672,8 +822,8 @@ async function doTheThing(gen, fun){
 	 await sync();
        }
        console.log("Checking for rx'd sstv sound");
-       if (!fs.existsSync(sstvRw)){
-           let msg = `${sstvI}_as_sstv`;
+       if (!fs.existsSync(sstvRw) || (!fs.existsSync(sstvRm))){
+           let msg = `${sstvI} as sstv`;
            await logRTTY(msg);
            changeTitle(msg);
            await transceiveIce(sstvRm,sstvW);
@@ -683,6 +833,9 @@ async function doTheThing(gen, fun){
        }
        console.log("Checking for rx'd sstv image");
        if (!fs.existsSync(sstvIR)){
+           if (!fs.existsSync(sstvRw)){
+              throw("missing", sstvRw);
+	   }
            let test = await sstvDecode(sstvRw, sstvIR, sstvW);
 	   if (test){
                success = true;
@@ -723,20 +876,41 @@ async function doTheThing(gen, fun){
    console.log("checking for rx'd wav from image data text");
    if (!fs.existsSync(rttyrx)){
        let msg = `${words} as rtty`;
-       await logRTTY(msg);
+       //await logRTTY(msg);
+       //await sleep(12000);
        changeTitle(msg);
        await transceiveIce(rttyrx, rtty);
        await sync();
+   }
+   if (fs.existsSync(rttyrx) && !fs.existsSync(rttyfind)){
+       console.log("copying", rttyrx, rttyfind);
+       fs.copyFileSync(rttyrx, rttyfind);
    }
    console.log("checking for rx'd text from image data text wav");
    if (!fs.existsSync(txtrx)){
        await rttyDecode(rttyrx, txtrx);
        await sync();
    }
+   console.log("checking for findings text");
+   if (!fs.existsSync(txtfind)){
+       fs.copyFileSync(txtrx,txtfind)
+   }
+   console.log("checking for reg avif");
+   if (!fs.existsSync(avif)){
+       await iConvert(sstvIRp, avif);
+   }
+   console.log("checking for enh avif");
+   if (!fs.existsSync(avife)){
+       await iConvert(enh, avife);
+   }
+   console.log("checking for findings opus");
+   if (!fs.existsSync(opus)){
+       await opusify(sstvRw,opus);
+   }
    console.log("end of gen");
    await logRTTY("end of process for this generation");
    await radbell();
-   await cleanUp(gen);
+   await cleanUp(gen, fn, syncs);
    await doTheThing(gen+1, fn);
   
 }
@@ -754,11 +928,12 @@ let models = [
   "llava",
   "ALIENTELLIGENCE/medicalimaginganalysis",
   //"moondream"
-]
+];
 
 let model = "";
 
 function getRandomElement(arr) {
+
   // Generate a random number between 0 (inclusive) and 1 (exclusive)
   const randomIndex = Math.floor(Math.random() * arr.length);
 
@@ -778,20 +953,31 @@ async function runQuery(img) {
 
   console.log("Running vision with", model);
   await logRTTY("analyzing image with " + model);
-  const response = await ollama.chat({
+  let response;
+  try { 
+    response = await ollama.chat({
     model: model,
     messages: [{
       role: 'user', content: content, images: [img]
     }]
   });
+  } catch(e) {
+    console.error("ollama failed", e);
+    return Promise.resolve(false);	  
+  }
   //console.log(response.message.content)
-  let resp = response.message.content;
-  console.log(resp);
-  console.log("Extracting JSON");
-  let json = extractObject(resp);
-  console.log(json);
-  breathing = false;
-  return Promise.resolve({data: json, model: model});
+  console.log(response);
+  if (response && response.message && response.message.content){
+      let resp = response.message.content;
+      console.log(resp);
+      console.log("Extracting JSON");
+      let json = extractObject(resp);
+      console.log(json);
+      breathing = false;
+      return Promise.resolve({data: json, model: model});
+  } else {
+      return Promise.resolve(false);
+  }
 }
 
 function extractObject(str) {
@@ -836,21 +1022,33 @@ function extractArray(str, last) {
 
 }
 
+let breathTimer;
+
 async function llamatime(img, fn) {
   breathing = true;
-  let bs = breathCycle();
+  breathTimer = Date.now();
+  let bs = breathCycle(img);
   let rq = runQuery(img);
   console.log("llamatime");
   let [answer, b] = await Promise.all([rq, bs]);
+  if (!answer){
+      breathing = false;
+      console.error("no answer from ollama");
+      return await llamatime(img,fn);
+  }
   console.log("------------------------------------------");
   let data;
   try {
     data = answer.data;
     data.model = answer.model;
-    
+    if (!data.items || !data.items.length){
+	console.error("no items found in response");
+        return await llamatime(img, fn);
+    }
     //delete data.description;
   } catch (e) {
     ollama.abort();
+    breathing = false;
     console.log(e);
     await logRTTY("recognition JSON didn't parse, retrying")
     console.log("didn't parse, trying again");
