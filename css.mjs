@@ -215,7 +215,7 @@ let xmit = async function(fn){
     let command = await ssh.exec(cmd);
     console.log('remote running', cmd,  command);
     if (command.includes("does not exist")){
-        logItem("missing file: " + fn);
+        log("missing file: " + fn);
     }
     await sleep(250);
     ssh.removeAllListeners();
@@ -656,7 +656,7 @@ async function findings(syncs, fn){
        await sleep(15000);
        return await findings(syncs);
    }
-   let remote = "/mnt/css/";
+   let remote = "/mnt/HC_Volume_104554153/css/";
    for (let u of syncs){
       let rem = remote;
       console.log("u: ", u);
@@ -790,7 +790,7 @@ async function doTheThing(gen, fun){
    let rttyfind = `findings/${fn}_rtty_rx.opus`;
    let txtrx = `text/${fn}_rx.txt`;
    let txtfind = `findings/${fn}_rx.txt`;
-   let syncs = [opus, avif, avife, rttyfind, txtfind].filter((e) => !e.includes(".gen-00_"));
+   let syncs = [opus, avif, avife, rttyfind, txtfind].filter((e) => !e.includes(".gen-00_") && !e.includes("portrait"));
 
    console.log(source, sstvI);
 
