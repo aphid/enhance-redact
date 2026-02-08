@@ -103,7 +103,7 @@ async function sync(filter){
 
    try {
       const result = await rsync.execute((data) => { 
-	      //console.log(data.toString())
+	      console.log(data.toString())
 	      }, (data) => { 
 		 //console.error(data.toString())
       });
@@ -372,7 +372,7 @@ let fixRate = async function (input, output){
 
 let opusify = async function (input, output){
     console.log("opusifying", input, output);
-    let cmd = `ffmpeg -i ${input} -b:v 12k ${output}`;
+    let cmd = `ffmpeg -i ${input} -b:a 12k ${output}`;
     try { 
 	let exec = cp.execSync(cmd);
 	console.log(exec.toString());
@@ -717,7 +717,7 @@ let updateStatus = async function(json){
         f = await f.json();
         console.log("Response: ", f);
     } catch(e){
-        console.error("Status Update Error:", url, e);
+        console.error("Status Update Error:", url, json, e);
     }
     
 };
