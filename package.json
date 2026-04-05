@@ -1,9 +1,9 @@
 {
   "dependencies": {
     "@moritzloewenstein/rsync": "^1.0.3",
-    "exiftool-vendored": "^31.2.0",
     "ollama": "^0.6.2",
     "ssh2-promise": "^1.0.3",
+    "telnet-client": "^2.2.9",
     "undici": "^7.16.0"
   }
 }
