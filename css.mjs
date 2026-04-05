@@ -635,6 +635,22 @@ async function cleanUp(gen, fn, syncs){
 
 let currentScan, lastImg;
 
+async function testRemote(fn,syncs){
+   let rdir = "https://aphid.org/css/1/";
+   console.log(syncs);
+   let txt = [...syncs].pop();
+   let targ = rdir + txt;
+   console.log("testing", targ);
+   let resp = await fetch(targ, { method: 'HEAD'});
+   console.log(resp.ok);
+   if (resp.ok){
+       
+       return Promise.resolve();
+   } else {
+       return await findings(syncs,fn);
+   }
+}
+
 async function findings(syncs, fn){
    console.log(syncs, fn);
    let sshconfig = {
@@ -656,7 +672,7 @@ async function findings(syncs, fn){
        await sleep(15000);
        return await findings(syncs);
    }
-   let remote = "/mnt/HC_Volume_104554153/css/";
+   let remote = "/mnt/findings/css/";
    for (let u of syncs){
       let rem = remote;
       console.log("u: ", u);
@@ -670,8 +686,13 @@ async function findings(syncs, fn){
          t = u.replace("findings","text");
       }
       console.log("rem: ", rem);
-      console.log(u, "to", rem+u)
-      await sftp.fastPut(u, rem+t, {});
+      console.log(u, "to", rem+u);
+      try { 
+         await sftp.fastPut(u, rem+t, {});
+      } catch (e) {
+         console.log("sync problem", e);
+	 throw("oof");
+      }
       console.log("done", u, rem+t);
    }
    try { 
@@ -765,6 +786,7 @@ async function doTheThing(gen, fun){
        throw("scanname is broken");
    }
    let lastt = "findings/" + fn.split(".")[0] + ".gen-45_rx.opus";
+   console.log("testing findings sync");
    console.log("checking existance of gen 45", lastt);
    //if txt exists for last gen...
    if (fs.existsSync(lastt)){
@@ -790,7 +812,8 @@ async function doTheThing(gen, fun){
    let rttyfind = `findings/${fn}_rtty_rx.opus`;
    let txtrx = `text/${fn}_rx.txt`;
    let txtfind = `findings/${fn}_rx.txt`;
-   let syncs = [opus, avif, avife, rttyfind, txtfind].filter((e) => !e.includes(".gen-00_") && !e.includes("portrait"));
+   let finds = [rttyfind, txtfind, avif, avife].filter((e) => !e.includes(".gen-00"));
+   let syncs = [opus, avif, avife, rttyfind, txtfind].filter((e) => !e.includes(".gen-00_"));
 
    console.log(source, sstvI);
 
@@ -798,6 +821,9 @@ async function doTheThing(gen, fun){
        console.log("gen complete");
        await logRTTY(`${fn} complete`);
        console.log("ding ding ding");
+       if (finds.length){
+           await testRemote(fn, finds);
+       }
        await radbell();
        await cleanUp(gen, fn, syncs);
        return await doTheThing(gen+1, fn);
