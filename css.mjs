@@ -668,9 +668,10 @@ async function findings(syncs, fn){
        await ssh.connect();
    } catch(e){
        console.error("something went wrong syncing with web server", e);
-       logRTTY("server unresponsive, attempting to reconnect");
+       logRTTY("server unresponsive,  attempting to reconnect");
        await sleep(15000);
-       return await findings(syncs);
+       //return await findings(syncs);
+       return Promise.resolve();
    }
    let remote = "/mnt/findings/css/";
    for (let u of syncs){
@@ -691,7 +692,8 @@ async function findings(syncs, fn){
          await sftp.fastPut(u, rem+t, {});
       } catch (e) {
          console.log("sync problem", e);
-	 throw("oof");
+	 //throw("oof");
+	 return Promise.resolve();
       }
       console.log("done", u, rem+t);
    }
