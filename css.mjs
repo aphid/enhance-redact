@@ -149,7 +149,9 @@ let spawnProm = async function (cmd, args, options, passed) {
     if (!options) {
         options = {};
     }
-
+    if (!passed){
+        passed = "";
+    }
     console.log(options)
 
     return new Promise(async (resolve, reject) => {
@@ -183,7 +185,8 @@ let spawnProm = async function (cmd, args, options, passed) {
             child.on('error', async (e) => {
                 console.log("uhoh");
                 console.log(e);
-                throw ("oof");
+                await sleep(5000);
+		//resolve(await spawnProm(cmd, args, options, passed))
                 reject(e);
             });
             child.on('exit', async (code) => {
@@ -191,7 +194,8 @@ let spawnProm = async function (cmd, args, options, passed) {
             });
         } catch (e) {
             console.error(e);
-	    throw(e);
+	    await sleep(5000);
+	    reject(e);
         }
     });
 
@@ -354,8 +358,13 @@ let sstvEncode = async function (img, options) {
     let cmd = "python";
     let args = ["-m", "pysstv", "--rate", "44100", "--mode", "PD290", here + img, here + output];
     console.log(cmd, args);
-    let sp = await spawnProm(cmd, args, { cwd: "/home/aphid/apps/pySSTV/" });
-
+    try { 
+        let sp = await spawnProm(cmd, args, { cwd: "/home/aphid/apps/pySSTV/" });
+    } catch(e){
+	console.err("something wrong with the LAN");
+        await sleep(10000);
+	return await sstvEncode(img, options);
+    }
     //is image right size? 800x616
     //command: ./.pysstv/bin/python -m pysstv --mode PD290 --vox ../nextnextgen.png ../nextnextgen.wav
     return Promise.resolve();
@@ -365,7 +374,13 @@ let fixRate = async function (input, output){
     let cmd = "sox";
     let args = [input, "-r", "44100", output];
     console.log(cmd, args);
-    let sp = await spawnProm(cmd, args);
+    try { 
+        let sp = await spawnProm(cmd, args);
+    }  catch(e){
+        console.err("something wrong with LAN");
+	await sleep(10000);
+	return await fixRate(input, output);
+    }
     return Promise.resolve();
 }
 
@@ -416,7 +431,9 @@ let sstvDecode = async function (wav, output, other) {
 	return Promise.resolve(false);
     }
     } catch(e) {
-      throw(e);
+      console.err("something wrong with the LAN");
+      await sleep(1000);
+      return await sstvDecode(wav,output,other);
     }
     return Promise.resolve(true);
     //command: ~/apps/slowrx-cli/slowrx-cli ./_oof.wav -o oof.bmp
@@ -432,8 +449,13 @@ let rttyEncode = async function (text, output, options) {
     }
     let cmd = "minimodem"
     let args = ["--write", "45.45", "--stopbits=1.5", "--ascii", "-f", output];
-
-    let sp = await spawnProm(cmd, args, { stdio: ["pipe", "pipe", "pipe"] }, text);
+    try {
+        let sp = await spawnProm(cmd, args, { stdio: ["pipe", "pipe", "pipe"] }, text);
+    } catch(e){
+        console.err("something wrong with LAN");
+	await sleep(10000);
+	return await rttyEncode(text,output,options);
+    }
     //command: cat input_file.txt | minimodem --write rtty -f modem_audio.wav
     return Promise.resolve();
 }
@@ -443,7 +465,13 @@ let rttyDecode = async function (opus, txt, options) {
     let output = opus.replace(".opus", ".txt");
     let cmd = "minimodem";
     let args = ["--rx", "45.45", "-q", "--file", opus];
-    let sp = await spawnProm(cmd, args);
+    try { 
+       let sp = await spawnProm(cmd, args);
+    } catch(e){
+       console.err("something wrong with LAN");
+       await sleep(10000);
+       return await rttyDecode(opus,txt,options);
+    }
     console.log(sp);
     fs.writeFileSync(txt, sp);
     //command: minimodem --rx rtty -q --file modem_audio.wav > output_file.txt
@@ -459,7 +487,13 @@ let getDescription = async function (image, options) {
 let iConvert = async function (infile, outfile, options) {
     let cmd = "convert";
     let args = [infile, outfile];
-    let sp = await spawnProm(cmd, args);
+    try { 
+      let sp = await spawnProm(cmd, args);
+    } catch(e){
+      console.err("LAN baddddd");
+      await sleep(10000);
+      return await(infile, outfile, options);
+    }
     console.log(sp);
 }
 
@@ -469,7 +503,13 @@ let enhanceImage = async function (image, options) {
     let output = image.replace(".png", "_enhanced.png");
     let cmd = "/home/aphid/apps/realesrgan-ncnn-vulkan-20220424-ubuntu/realesrgan-ncnn-vulkan";
     let args = ["-i", image, "-o", output];
-    let sp = await spawnProm(cmd, args);
+    try { 
+       let sp = await spawnProm(cmd, args);
+    } catch (e){
+       console.err("LAN BAAD", e);
+       await sleep(10000);
+       return await enhanceImage(image, options);
+    }
     console.log(sp);
     //command ./realesrgan-ncnn-vulkan -i ~/liver.png -o liver.png
 
@@ -540,7 +580,9 @@ let sstvComply = async function (image, output, options) {
        let sp = await spawnProm(cmd, args);
        console.log(sp);
     } catch (e){
-	throw(e);
+       console.err("baddd lan", e);
+       await sleep(10000);
+       return sstvComply(image, output, options);
     }
     //console.log(sp);
     return Promise.resolve();
