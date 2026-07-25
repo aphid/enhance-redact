@@ -86,6 +86,7 @@ function base64_encode(file) {
 
 
 async function sync(filter){
+   console.log(filter);
    let drs = dirs;
    if (filter){
      drs = [filter];
@@ -780,7 +781,7 @@ let updateStatus = async function(json){
     try { 
         let f = await fetch(url, options);
         f = await f.json();
-        console.log("Response: ", f);
+        console.log("Response: ", f, json);
     } catch(e){
         console.error("Status Update Error:", url, json, e);
     }
